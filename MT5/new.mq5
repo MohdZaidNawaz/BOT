@@ -2,10 +2,10 @@
 CTrade trade;
 
 //--------------------- INPUTS ---------------------
-input double InpLotSize        = 0.10;
+input double InpLotSize        = 0.1;
 input int    InpMagicNumber    = 123456;
-input double InpStopLossPips   = 20;
-input double InpTakeProfitPips = 100;
+input double InpSLAtrMultiplier = 10;   // Stop loss = ATR x this multiplier
+input double InpTPAtrMultiplier = 200;   // Take profit = ATR x this multiplier
 
 input double InpUTKeyValue     = 2.0;   // UT Bot sensitivity
 input int    InpUTAtrPeriod    = 1;     // UT Bot ATR period
@@ -15,7 +15,11 @@ input int    InpHMAPeriod      = 31;    // Hull MA period
 input string InpORBStart       = "10:10"; // Opening range start (HH:MM, server time)
 input string InpORBEnd         = "10:15"; // Opening range end   (HH:MM, server time)
 
-input int    InpBarsToFetch    = 300;   // History depth for calculations
+input int    InpBarsToFetch    = 3000;   // History depth for calculations
+
+input bool     InpUseCustomPeriod = false;                 // Enable custom backtest period
+input datetime InpStartDate       = D'2026.01.01 00:00';   // Only trade on/after this date
+input datetime InpEndDate         = D'2026.12.31 23:59';   // Only trade on/before this date
 
 //--------------------- GLOBALS ---------------------
 int      atrHandle;
@@ -109,12 +113,27 @@ int ParseMinutes(string hhmm)
   }
 
 //+------------------------------------------------------------------+
+//| Returns true if barTime falls inside the user-defined test       |
+//| window (or always true if the custom period is disabled).       |
+//+------------------------------------------------------------------+
+bool InCustomPeriod(datetime barTime)
+  {
+   if(!InpUseCustomPeriod)
+      return(true);
+
+   return(barTime >= InpStartDate && barTime <= InpEndDate);
+  }
+
+//+------------------------------------------------------------------+
 void OnTick()
   {
    datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
    if(currentBarTime == lastBarTime)
       return;               // only act once per new bar
    lastBarTime = currentBarTime;
+
+   if(!InCustomPeriod(currentBarTime))
+      return;               // outside the custom test window, skip entirely
 
    int total = InpBarsToFetch;
    MqlRates rates[];
@@ -222,20 +241,20 @@ void OnTick()
          " long=", longSignal, " short=", shortSignal);
 
    //--------------- EXECUTION ---------------
-   ManageTrade(longSignal, shortSignal);
+   double currentAtr = atrBuf[last];
+   ManageTrade(longSignal, shortSignal, currentAtr);
   }
 
 //+------------------------------------------------------------------+
-void ManageTrade(bool longSignal, bool shortSignal)
+void ManageTrade(bool longSignal, bool shortSignal, double currentAtr)
   {
    bool hasPosition = PositionSelect(_Symbol);
    long posType = -1;
    if(hasPosition)
       posType = PositionGetInteger(POSITION_TYPE);
 
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
-   double pipSize = (digits == 5 || digits == 3) ? point * 10 : point;
+   double slDistance = currentAtr * InpSLAtrMultiplier;
+   double tpDistance = currentAtr * InpTPAtrMultiplier;
 
    if(longSignal)
      {
@@ -247,8 +266,8 @@ void ManageTrade(bool longSignal, bool shortSignal)
       if(!hasPosition)
         {
          double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double sl  = ask - InpStopLossPips * pipSize;
-         double tp  = ask + InpTakeProfitPips * pipSize;
+         double sl  = ask - slDistance;
+         double tp  = ask + tpDistance;
          trade.Buy(InpLotSize, _Symbol, ask, sl, tp, "UT_HMA_ORB long");
         }
      }
@@ -262,8 +281,8 @@ void ManageTrade(bool longSignal, bool shortSignal)
       if(!hasPosition)
         {
          double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         double sl  = bid + InpStopLossPips * pipSize;
-         double tp  = bid - InpTakeProfitPips * pipSize;
+         double sl  = bid + slDistance;
+         double tp  = bid - tpDistance;
          trade.Sell(InpLotSize, _Symbol, bid, sl, tp, "UT_HMA_ORB short");
         }
      }

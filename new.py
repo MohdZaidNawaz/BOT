@@ -1,19 +1,3 @@
-"""
-SVMKR_UT_HMA_ORB - Python translation of the Pine Script indicator.
-
-Combines three tools:
-  1. UT Bot        - ATR-based trailing stop trend/reversal signals
-  2. Hull MA (HMA) - fast, smoothed moving average for momentum direction
-  3. ORB            - Opening Range Breakout high/low tracking
-
-Input: a pandas DataFrame with columns ['open', 'high', 'low', 'close']
-       and a DatetimeIndex (needed for the ORB session logic).
-
-This module only computes indicators / signals. It does NOT place trades.
-To build a live bot, feed these signals into a broker/exchange API
-(see the bottom of this file for a sketch of how that wiring looks).
-"""
-
 import numpy as np
 import pandas as pd
 
