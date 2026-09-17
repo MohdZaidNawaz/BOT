@@ -3,12 +3,21 @@ import pandas as pd
 
 
 # --------------------------------------------------------------------------
-# 1. UT BOT
+# 1. ATR - Wilder / RMA
 # --------------------------------------------------------------------------
 
 def atr(df: pd.DataFrame, period: int = 1) -> pd.Series:
-    """Average True Range (Wilder-style, matches Pine's built-in atr())."""
-    high, low, close = df["high"], df["low"], df["close"]
+    """
+    Wilder-style ATR.
+
+    Equivalent to the ATR used by the MQL5 EA:
+        iATR(_Symbol, PERIOD_CURRENT, period)
+    """
+
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
     prev_close = close.shift(1)
 
     tr = pd.concat(
@@ -20,70 +29,171 @@ def atr(df: pd.DataFrame, period: int = 1) -> pd.Series:
         axis=1,
     ).max(axis=1)
 
-    # Pine's atr() uses Wilder's RMA smoothing (alpha = 1/period)
-    return tr.ewm(alpha=1 / period, adjust=False).mean()
+    # Wilder RMA
+    return tr.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
 
 
-def ut_bot(df: pd.DataFrame, key_value: float = 2.0, atr_period: int = 1,
-           use_heikin_ashi: bool = False) -> pd.DataFrame:
+# --------------------------------------------------------------------------
+# 2. UT BOT
+# --------------------------------------------------------------------------
+
+def ut_bot(
+    df: pd.DataFrame,
+    key_value: float = 2.0,
+    atr_period: int = 1,
+) -> pd.DataFrame:
     """
-    Replicates the UT Bot Alerts indicator.
+    Python equivalent of the UT Bot section in the MQL5 EA.
 
-    Returns a DataFrame with columns:
-        xATRTrailingStop, pos, buy, sell
+    MQL5:
+        nLoss = InpUTKeyValue * ATR
+
+        trailing stop:
+            if src > prevStop && prevSrc > prevStop
+                max(prevStop, src - nLoss)
+
+            else if src < prevStop && prevSrc < prevStop
+                min(prevStop, src + nLoss)
+
+            else if src > prevStop
+                src - nLoss
+
+            else
+                src + nLoss
     """
-    src = df["close"].copy()
 
-    if use_heikin_ashi:
-        src = _heikin_ashi_close(df)
+    src = df["close"].astype(float)
 
-    n_loss = key_value * atr(df, atr_period)
+    atr_values = atr(df, atr_period)
 
-    trailing_stop = np.zeros(len(df))
-    src_vals = src.values
-    n_loss_vals = n_loss.values
+    n_loss = key_value * atr_values
 
-    for i in range(len(df)):
-        if i == 0:
-            trailing_stop[i] = 0.0
-            continue
+    src_values = src.to_numpy()
+    n_loss_values = n_loss.to_numpy()
 
-        prev_stop = trailing_stop[i - 1]
-        prev_src = src_vals[i - 1]
+    trailing_stop = np.zeros(len(df), dtype=float)
+    pos = np.zeros(len(df), dtype=int)
 
-        if src_vals[i] > prev_stop and prev_src > prev_stop:
-            trailing_stop[i] = max(prev_stop, src_vals[i] - n_loss_vals[i])
-        elif src_vals[i] < prev_stop and prev_src < prev_stop:
-            trailing_stop[i] = min(prev_stop, src_vals[i] + n_loss_vals[i])
-        elif src_vals[i] > prev_stop:
-            trailing_stop[i] = src_vals[i] - n_loss_vals[i]
-        else:
-            trailing_stop[i] = src_vals[i] + n_loss_vals[i]
+    if len(df) == 0:
+        return pd.DataFrame(
+            columns=[
+                "xATRTrailingStop",
+                "pos",
+                "buy",
+                "sell",
+            ],
+            index=df.index,
+        )
 
-    trailing_stop = pd.Series(trailing_stop, index=df.index)
+    trailing_stop[0] = 0.0
+    pos[0] = 0
 
-    # pos: +1 uptrend, -1 downtrend, 0 undefined
-    pos = np.zeros(len(df))
     for i in range(1, len(df)):
-        if src_vals[i - 1] < trailing_stop.iloc[i - 1] and src_vals[i] > trailing_stop.iloc[i]:
+
+        current_src = src_values[i]
+        previous_src = src_values[i - 1]
+
+        previous_stop = trailing_stop[i - 1]
+        current_loss = n_loss_values[i]
+
+        # Same recursive trailing stop logic as MQL5
+        if (
+            current_src > previous_stop
+            and previous_src > previous_stop
+        ):
+            trailing_stop[i] = max(
+                previous_stop,
+                current_src - current_loss,
+            )
+
+        elif (
+            current_src < previous_stop
+            and previous_src < previous_stop
+        ):
+            trailing_stop[i] = min(
+                previous_stop,
+                current_src + current_loss,
+            )
+
+        elif current_src > previous_stop:
+            trailing_stop[i] = current_src - current_loss
+
+        else:
+            trailing_stop[i] = current_src + current_loss
+
+        # Same pos logic as MQL5
+        if (
+            previous_src < previous_stop
+            and current_src > trailing_stop[i]
+        ):
             pos[i] = 1
-        elif src_vals[i - 1] > trailing_stop.iloc[i - 1] and src_vals[i] < trailing_stop.iloc[i]:
+
+        elif (
+            previous_src > previous_stop
+            and current_src < trailing_stop[i]
+        ):
             pos[i] = -1
+
         else:
             pos[i] = pos[i - 1]
-    pos = pd.Series(pos, index=df.index)
 
-    # ema(src, 1) == src itself, so "above"/"below" are just crossovers of src vs stop
-    above = (src > trailing_stop) & (src.shift(1) <= trailing_stop.shift(1))
-    below = (trailing_stop > src) & (trailing_stop.shift(1) <= src.shift(1))
+    trailing_stop_series = pd.Series(
+        trailing_stop,
+        index=df.index,
+    )
 
-    buy = (src > trailing_stop) & above
-    sell = (src < trailing_stop) & below
+    pos_series = pd.Series(
+        pos,
+        index=df.index,
+    )
+
+    # MQL5:
+    #
+    # above =
+    # close[last] > stop[last]
+    # &&
+    # close[prev] <= stop[prev]
+    #
+    # below =
+    # stop[last] > close[last]
+    # &&
+    # stop[prev] <= close[prev]
+
+    above = (
+        (src > trailing_stop_series)
+        &
+        (
+            src.shift(1)
+            <= trailing_stop_series.shift(1)
+        )
+    )
+
+    below = (
+        (trailing_stop_series > src)
+        &
+        (
+            trailing_stop_series.shift(1)
+            <= src.shift(1)
+        )
+    )
+
+    buy = (
+        (src > trailing_stop_series)
+        & above
+    )
+
+    sell = (
+        (src < trailing_stop_series)
+        & below
+    )
 
     return pd.DataFrame(
         {
-            "xATRTrailingStop": trailing_stop,
-            "pos": pos,
+            "xATRTrailingStop": trailing_stop_series,
+            "pos": pos_series,
             "buy": buy,
             "sell": sell,
         },
@@ -91,43 +201,87 @@ def ut_bot(df: pd.DataFrame, key_value: float = 2.0, atr_period: int = 1,
     )
 
 
-def _heikin_ashi_close(df: pd.DataFrame) -> pd.Series:
-    """Compute Heikin Ashi close values from regular OHLC."""
-    ha_close = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
-    return ha_close
-
-
 # --------------------------------------------------------------------------
-# 2. HULL MOVING AVERAGE
+# 3. WMA
 # --------------------------------------------------------------------------
 
 def wma(series: pd.Series, period: int) -> pd.Series:
-    """Weighted Moving Average."""
-    weights = np.arange(1, period + 1)
+    """
+    Weighted Moving Average.
+
+    Same weighting used by the MQL5 WMA function:
+        weight = i + 1
+    """
+
+    if period <= 0:
+        raise ValueError("WMA period must be greater than zero")
+
+    weights = np.arange(
+        1,
+        period + 1,
+        dtype=float,
+    )
+
+    weight_sum = weights.sum()
+
     return series.rolling(period).apply(
-        lambda x: np.dot(x, weights) / weights.sum(), raw=True
+        lambda values: np.dot(values, weights) / weight_sum,
+        raw=True,
     )
 
 
-def hull_ma(df: pd.DataFrame, period: int = 31) -> pd.Series:
-    """
-    Hull Moving Average.
-    HMA = WMA(2*WMA(close, n/2) - WMA(close, n), sqrt(n))
-    """
-    close = df["close"]
-    half_period = int(round(period / 2))
-    sqrt_period = int(round(np.sqrt(period)))
+# --------------------------------------------------------------------------
+# 4. HULL MOVING AVERAGE
+# --------------------------------------------------------------------------
 
-    wma_half = wma(close, half_period)
-    wma_full = wma(close, period)
-    diff = 2 * wma_half - wma_full
+def hull_ma(
+    df: pd.DataFrame,
+    period: int = 31,
+) -> pd.Series:
+    """
+    HMA equivalent to the MQL5 HullMA() function.
 
-    hma = wma(diff, sqrt_period)
-    return hma
+    HMA =
+        WMA(
+            2 * WMA(close, halfPeriod)
+            - WMA(close, period),
+            sqrtPeriod
+        )
+    """
+
+    close = df["close"].astype(float)
+
+    half_period = int(
+        round(period / 2.0)
+    )
+
+    sqrt_period = int(
+        round(np.sqrt(period))
+    )
+
+    wma_half = wma(
+        close,
+        half_period,
+    )
+
+    wma_full = wma(
+        close,
+        period,
+    )
+
+    diff = (
+        2.0 * wma_half
+        - wma_full
+    )
+
+    return wma(
+        diff,
+        sqrt_period,
+    )
 
 
 # --------------------------------------------------------------------------
-# 3. OPENING RANGE BREAKOUT (ORB)
+# 5. OPENING RANGE BREAKOUT
 # --------------------------------------------------------------------------
 
 def opening_range_breakout(
@@ -136,44 +290,98 @@ def opening_range_breakout(
     session_end: str = "10:15",
 ) -> pd.DataFrame:
     """
-    Tracks the high/low made during a daily time window (the "opening range"),
-    then holds that high/low flat for the rest of the day so later price
-    action can be compared against it for a breakout.
+    Equivalent to the ORB section of the MQL5 EA.
 
-    Requires df.index to be a DatetimeIndex.
+    The MQL5 EA calculates today's:
+        highest high
+        lowest low
 
-    Returns a DataFrame with columns: orb_high, orb_low, in_session
+    between:
+        session_start
+        session_end
+
+    inclusive.
     """
-    idx_time = df.index.time
-    start_t = pd.to_datetime(session_start).time()
-    end_t = pd.to_datetime(session_end).time()
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError(
+            "DataFrame index must be a DatetimeIndex"
+        )
+
+    start_time = pd.to_datetime(
+        session_start
+    ).time()
+
+    end_time = pd.to_datetime(
+        session_end
+    ).time()
+
+    timestamps = df.index
 
     in_session = pd.Series(
-        [start_t <= t <= end_t for t in idx_time], index=df.index
+        [
+            start_time <= timestamp.time() <= end_time
+            for timestamp in timestamps
+        ],
+        index=df.index,
     )
 
-    dates = df.index.date
-    orb_high = np.full(len(df), np.nan)
-    orb_low = np.full(len(df), np.nan)
+    orb_high = np.full(
+        len(df),
+        np.nan,
+        dtype=float,
+    )
+
+    orb_low = np.full(
+        len(df),
+        np.nan,
+        dtype=float,
+    )
 
     current_date = None
-    day_high = np.nan
-    day_low = np.nan
+    current_high = np.nan
+    current_low = np.nan
 
     for i in range(len(df)):
-        d = dates[i]
-        if d != current_date:
-            current_date = d
-            day_high = np.nan
-            day_low = np.nan
 
+        current_day = timestamps[i].date()
+
+        # New day
+        if current_day != current_date:
+            current_date = current_day
+
+            current_high = np.nan
+            current_low = np.nan
+
+        # Update ORB only during the session
         if in_session.iloc[i]:
-            h, l = df["high"].iloc[i], df["low"].iloc[i]
-            day_high = h if np.isnan(day_high) else max(day_high, h)
-            day_low = l if np.isnan(day_low) else min(day_low, l)
 
-        orb_high[i] = day_high
-        orb_low[i] = day_low
+            bar_high = float(
+                df["high"].iloc[i]
+            )
+
+            bar_low = float(
+                df["low"].iloc[i]
+            )
+
+            if np.isnan(current_high):
+                current_high = bar_high
+            else:
+                current_high = max(
+                    current_high,
+                    bar_high,
+                )
+
+            if np.isnan(current_low):
+                current_low = bar_low
+            else:
+                current_low = min(
+                    current_low,
+                    bar_low,
+                )
+
+        orb_high[i] = current_high
+        orb_low[i] = current_low
 
     return pd.DataFrame(
         {
@@ -186,7 +394,7 @@ def opening_range_breakout(
 
 
 # --------------------------------------------------------------------------
-# 4. COMBINED SIGNAL GENERATOR (example of using all three together)
+# 6. COMBINED SIGNAL GENERATOR
 # --------------------------------------------------------------------------
 
 def generate_signals(
@@ -198,50 +406,138 @@ def generate_signals(
     orb_end: str = "10:15",
 ) -> pd.DataFrame:
     """
-    Combines UT Bot + HMA + ORB into one DataFrame.
-    Adds a simple confluence 'long_signal' / 'short_signal' example:
-        long  = UT buy AND HMA rising AND close breaks above ORB high
-        short = UT sell AND HMA falling AND close breaks below ORB low
-    Adjust this confluence logic to match your own strategy.
+    Combines:
+
+        UT Bot
+        HMA
+        ORB
+
+    Exact signal conditions from MQL5:
+
+        LONG:
+            utBuy
+            AND hmaRising
+            AND haveORB
+            AND close > orbHigh
+
+        SHORT:
+            utSell
+            AND NOT hmaRising
+            AND haveORB
+            AND close < orbLow
     """
-    ut = ut_bot(df, ut_key_value, ut_atr_period)
-    hma = hull_ma(df, hma_period)
-    orb = opening_range_breakout(df, orb_start, orb_end)
+
+    if df.empty:
+        return df.copy()
+
+    # UT Bot
+    ut = ut_bot(
+        df,
+        key_value=ut_key_value,
+        atr_period=ut_atr_period,
+    )
+
+    # HMA
+    hma = hull_ma(
+        df,
+        period=hma_period,
+    )
+
+    # ORB
+    orb = opening_range_breakout(
+        df,
+        session_start=orb_start,
+        session_end=orb_end,
+    )
+
+    # ATR required for MQL5-style SL/TP
+    atr_values = atr(
+        df,
+        ut_atr_period,
+    )
 
     out = df.copy()
-    out["xATRTrailingStop"] = ut["xATRTrailingStop"]
+
+    out["atr"] = atr_values
+
+    out["xATRTrailingStop"] = (
+        ut["xATRTrailingStop"]
+    )
+
+    out["pos"] = ut["pos"]
+
     out["ut_buy"] = ut["buy"]
+
     out["ut_sell"] = ut["sell"]
+
     out["hma"] = hma
-    out["hma_rising"] = hma > hma.shift(1)
-    out["orb_high"] = orb["orb_high"]
-    out["orb_low"] = orb["orb_low"]
+
+    out["hma_rising"] = (
+        hma > hma.shift(1)
+    )
+
+    out["orb_high"] = (
+        orb["orb_high"]
+    )
+
+    out["orb_low"] = (
+        orb["orb_low"]
+    )
+
+    out["have_orb"] = (
+        out["orb_high"].notna()
+        &
+        out["orb_low"].notna()
+    )
+
+    # --------------------------------------------------------------
+    # Exact MQL5 long condition
+    # --------------------------------------------------------------
 
     out["long_signal"] = (
         out["ut_buy"]
-        & out["hma_rising"]
-        & (out["close"] > out["orb_high"])
+        &
+        out["hma_rising"]
+        &
+        out["have_orb"]
+        &
+        (
+            out["close"]
+            > out["orb_high"]
+        )
     )
+
+    # --------------------------------------------------------------
+    # Exact MQL5 short condition
+    # --------------------------------------------------------------
+
     out["short_signal"] = (
         out["ut_sell"]
-        & (~out["hma_rising"])
-        & (out["close"] < out["orb_low"])
+        &
+        (~out["hma_rising"])
+        &
+        out["have_orb"]
+        &
+        (
+            out["close"]
+            < out["orb_low"]
+        )
     )
 
     return out
 
 
 # --------------------------------------------------------------------------
-# Example usage
+# TEST
 # --------------------------------------------------------------------------
-if __name__ == "__main__":
-    # Load your own OHLCV data here, e.g. from a CSV or a broker's API.
-    # DataFrame must have columns: open, high, low, close
-    # and a DatetimeIndex.
-    #
-    # Example:
-    # df = pd.read_csv("data.csv", index_col="datetime", parse_dates=True)
-    # signals = generate_signals(df)
-    # print(signals[signals["long_signal"] | signals["short_signal"]])
 
-    print("Import this module and call generate_signals(df) with your OHLCV data.")
+if __name__ == "__main__":
+
+    print(
+        "Strategy module loaded successfully."
+    )
+
+    print(
+        "Use generate_signals(df) "
+        "to calculate UT Bot + HMA + ORB signals."
+    )
