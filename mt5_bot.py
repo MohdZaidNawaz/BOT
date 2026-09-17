@@ -76,7 +76,6 @@ def fetch_ohlc(symbol: str, timeframe, n_bars: int) -> pd.DataFrame:
     return df[["open", "high", "low", "close", "volume"]]
 
 
-# --------------------------------------------------------------------------
 # ORDER MANAGEMENT
 # --------------------------------------------------------------------------
 
