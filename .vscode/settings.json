@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}\\venv\\Scripts\\python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}\\venv\\Lib\\site-packages"
+  ],
+  "mql_tools.Metaeditor.Metaeditor5Dir": "C:\\Program Files\\MetaTrader 5\\metaeditor64.exe",
+  "mql_tools.Metaeditor.Include5Dir": "C:\\Users\\mohdz\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5",
+  "[cpp]": {
+    "C_Cpp.errorSquiggles": "disabled"
+  }
+}

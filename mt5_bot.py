@@ -1,7 +1,16 @@
 import time
 from datetime import datetime
 
-import MetaTrader5 as mt5
+import importlib
+
+
+try:
+    mt5 = importlib.import_module("MetaTrader5")
+except ImportError as exc:
+    raise ImportError(
+        "MetaTrader5 is not installed in the selected Python environment. "
+        "Install it with: python -m pip install MetaTrader5"
+    ) from exc
 import pandas as pd
 
 from new import generate_signals
