@@ -1,12 +1,3 @@
-//+------------------------------------------------------------------+
-//|                                          SVMKR_UT_HMA_ORB_EA.mq5  |
-//|  UT Bot (ATR trailing stop) + Hull MA + Opening Range Breakout   |
-//|  Native MQL5 port of the original Pine Script indicator.        |
-//+------------------------------------------------------------------+
-#property copyright "Converted from Pine Script"
-#property version   "1.00"
-#property strict
-
 #include <Trade\Trade.mqh>
 CTrade trade;
 
